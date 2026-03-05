@@ -8,6 +8,8 @@ const socketIO = require('socket.io');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const mysql = require('mysql2/promise');
+// Optional Redis Pub/Sub transport for realtime fanout across multiple app servers.
+const { createClient } = require('redis');
 const DebeziumCDCConsumer = require('./debezium-cdc-consumer');
 
 const app = express();
@@ -34,6 +36,76 @@ const MODULE_BY_TABLE = {
 
 let pool;
 let cdcConsumer;
+let redisPub;
+let redisSub;
+let redisReady = false;
+
+// Realtime modes:
+// - direct: emit straight to WebSocket clients (single server).
+// - redis: publish to Redis; subscribers relay to WebSocket (multi server).
+// - both: direct + Redis (useful for parallel testing).
+const REALTIME_MODE = (process.env.REALTIME_MODE || 'direct').toLowerCase();
+const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
+const REDIS_CHANNEL = process.env.REDIS_CHANNEL || 'live-data-events';
+const INSTANCE_ID = process.env.INSTANCE_ID || `node-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+function usesDirect(mode = REALTIME_MODE) {
+  return mode === 'direct' || mode === 'both';
+}
+
+function usesRedis(mode = REALTIME_MODE) {
+  return mode === 'redis' || mode === 'both';
+}
+
+function getModeFromRequest(req) {
+  const override = typeof req?.query?.realtime === 'string' ? req.query.realtime.toLowerCase() : '';
+  if (override === 'direct' || override === 'redis' || override === 'both') return override;
+  return REALTIME_MODE;
+}
+
+// Connect Redis Pub/Sub if enabled by REALTIME_MODE.
+async function initializeRealtime() {
+  if (!usesRedis()) return;
+  try {
+    redisPub = createClient({ url: REDIS_URL });
+    redisSub = redisPub.duplicate();
+    await redisPub.connect();
+    await redisSub.connect();
+    await redisSub.subscribe(REDIS_CHANNEL, (message) => {
+      try {
+        const parsed = JSON.parse(message);
+        if (!parsed || !parsed.event) return;
+        if (parsed.origin === INSTANCE_ID && usesDirect()) return;
+        io.emit(parsed.event, parsed.payload);
+      } catch (err) {
+        console.warn('Redis message parse failed:', err);
+      }
+    });
+    redisReady = true;
+    console.log('Redis Pub/Sub connected');
+  } catch (error) {
+    redisReady = false;
+    console.warn('Redis Pub/Sub unavailable:', error.message);
+  }
+}
+
+// Unified emitter:
+// - CDC path: Debezium -> Kafka -> Node consumer -> emitRealtime -> WebSocket/Redis.
+// - Redis path: Service update -> emitRealtime -> Redis -> WebSocket.
+function emitRealtime(eventName, payload, mode = REALTIME_MODE) {
+  if (usesDirect(mode)) {
+    io.emit(eventName, payload);
+  }
+
+  if (usesRedis(mode) && redisReady) {
+    const message = JSON.stringify({
+      event: eventName,
+      payload,
+      origin: INSTANCE_ID
+    });
+    redisPub.publish(REDIS_CHANNEL, message);
+  }
+}
 
 async function initializePool() {
   pool = await mysql.createPool({
@@ -61,7 +133,11 @@ async function initializeCDC() {
     {
       database: process.env.DB_NAME || 'live_data',
       serviceName: 'node-service',
-      moduleByTable: MODULE_BY_TABLE
+      moduleByTable: MODULE_BY_TABLE,
+      // CDC events are emitted through emitRealtime so Redis can relay them too.
+      realtime: {
+        emit: (event, payload) => emitRealtime(event, payload)
+      }
     }
   );
 
@@ -70,7 +146,7 @@ async function initializeCDC() {
 }
 
 io.on('connection', (socket) => {
-  console.log(`? Client connected: ${socket.id}`);
+  console.log(`Client connected: ${socket.id}`);
   socket.emit('modules:available', { modules: Object.keys(MODULES) });
 
   socket.on('disconnect', () => {
@@ -105,13 +181,13 @@ app.post('/api/modules/:module', async (req, res) => {
 
     if (moduleKey === 'sales_orders') {
       record = await createSalesOrder(req.body, conn);
-      io.emit('module:data_inserted', { module: moduleKey, record });
+      emitRealtime('module:data_inserted', { module: moduleKey, record }, getModeFromRequest(req));
     } else if (moduleKey === 'customers') {
-      record = await createCustomer(req.body, conn);
-      io.emit('module:data_inserted', { module: moduleKey, record });
+      record = await createCustomer(req.body, conn, getModeFromRequest(req));
+      emitRealtime('module:data_inserted', { module: moduleKey, record }, getModeFromRequest(req));
     } else if (moduleKey === 'products') {
-      record = await createProduct(req.body, conn);
-      io.emit('module:data_inserted', { module: moduleKey, record });
+      record = await createProduct(req.body, conn, getModeFromRequest(req));
+      emitRealtime('module:data_inserted', { module: moduleKey, record }, getModeFromRequest(req));
     }
 
     conn.release();
@@ -133,13 +209,13 @@ app.put('/api/modules/:module/:id', async (req, res) => {
 
     if (moduleKey === 'sales_orders') {
       record = await updateSalesOrder(id, req.body, conn);
-      io.emit('module:data_updated', { module: moduleKey, record });
+      emitRealtime('module:data_updated', { module: moduleKey, record }, getModeFromRequest(req));
     } else if (moduleKey === 'customers') {
-      record = await updateCustomer(id, req.body, conn);
-      io.emit('module:data_updated', { module: moduleKey, record });
+      record = await updateCustomer(id, req.body, conn, getModeFromRequest(req));
+      emitRealtime('module:data_updated', { module: moduleKey, record }, getModeFromRequest(req));
     } else if (moduleKey === 'products') {
-      record = await updateProduct(id, req.body, conn);
-      io.emit('module:data_updated', { module: moduleKey, record });
+      record = await updateProduct(id, req.body, conn, getModeFromRequest(req));
+      emitRealtime('module:data_updated', { module: moduleKey, record }, getModeFromRequest(req));
     }
 
     conn.release();
@@ -164,6 +240,7 @@ const PORT = process.env.PORT || 3000;
 async function start() {
   try {
     await initializePool();
+    await initializeRealtime();
     await initializeCDC();
 
     server.listen(PORT, () => {
@@ -257,7 +334,7 @@ async function updateSalesOrder(id, payload, conn) {
   return await getViewRowById('sales_orders', id, conn);
 }
 
-async function createCustomer(payload, conn) {
+async function createCustomer(payload, conn, emitMode) {
   const result = await conn.execute(
     'INSERT INTO users (name, email, phone, company, tier, status, city, country, credit_limit) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
     [
@@ -274,11 +351,11 @@ async function createCustomer(payload, conn) {
   );
 
   await refreshCustomerView(result[0].insertId, conn);
-  await refreshSalesOrdersForCustomer(result[0].insertId, conn);
+  await emitDependentModules('customers', result[0].insertId, conn, emitMode);
   return await getViewRowById('customers', result[0].insertId, conn);
 }
 
-async function updateCustomer(id, payload, conn) {
+async function updateCustomer(id, payload, conn, emitMode) {
   await conn.execute(
     'UPDATE users SET name = ?, email = ?, phone = ?, company = ?, tier = ?, status = ?, city = ?, country = ?, credit_limit = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
     [
@@ -296,11 +373,11 @@ async function updateCustomer(id, payload, conn) {
   );
 
   await refreshCustomerView(id, conn);
-  await refreshSalesOrdersForCustomer(id, conn);
+  await emitDependentModules('customers', id, conn, emitMode);
   return await getViewRowById('customers', id, conn);
 }
 
-async function createProduct(payload, conn) {
+async function createProduct(payload, conn, emitMode) {
   const result = await conn.execute(
     'INSERT INTO products (sku, name, category, price, stock, status, supplier, rating, launch_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
     [
@@ -317,11 +394,11 @@ async function createProduct(payload, conn) {
   );
 
   await refreshProductView(result[0].insertId, conn);
-  await refreshSalesOrdersForProduct(result[0].insertId, conn);
+  await emitDependentModules('products', result[0].insertId, conn, emitMode);
   return await getViewRowById('products', result[0].insertId, conn);
 }
 
-async function updateProduct(id, payload, conn) {
+async function updateProduct(id, payload, conn, emitMode) {
   await conn.execute(
     'UPDATE products SET sku = ?, name = ?, category = ?, price = ?, stock = ?, status = ?, supplier = ?, rating = ?, launch_date = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
     [
@@ -339,7 +416,7 @@ async function updateProduct(id, payload, conn) {
   );
 
   await refreshProductView(id, conn);
-  await refreshSalesOrdersForProduct(id, conn);
+  await emitDependentModules('products', id, conn, emitMode);
   return await getViewRowById('products', id, conn);
 }
 
@@ -443,6 +520,14 @@ async function refreshSalesOrdersForCustomer(customerId, conn) {
   );
 }
 
+async function getSalesOrderIdsForCustomer(customerId, conn) {
+  const [rows] = await conn.execute(
+    'SELECT id FROM sales_orders WHERE customer_id = ?',
+    [customerId]
+  );
+  return rows.map((row) => row.id);
+}
+
 async function refreshSalesOrdersForProduct(productId, conn) {
   await conn.execute(
     `UPDATE sales_orders_view v
@@ -454,11 +539,57 @@ async function refreshSalesOrdersForProduct(productId, conn) {
   );
 }
 
+async function getSalesOrderIdsForProduct(productId, conn) {
+  const [rows] = await conn.execute(
+    'SELECT id FROM sales_orders WHERE product_id = ?',
+    [productId]
+  );
+  return rows.map((row) => row.id);
+}
+
+const DEPENDENT_MODULES = {
+  customers: [
+    {
+      moduleKey: 'sales_orders',
+      refresh: refreshSalesOrdersForCustomer,
+      getIds: getSalesOrderIdsForCustomer
+    }
+  ],
+  products: [
+    {
+      moduleKey: 'sales_orders',
+      refresh: refreshSalesOrdersForProduct,
+      getIds: getSalesOrderIdsForProduct
+    }
+  ]
+};
+
+async function emitDependentModules(sourceModule, sourceId, conn, emitMode) {
+  const dependencies = DEPENDENT_MODULES[sourceModule] || [];
+  for (const dependency of dependencies) {
+    // Refresh dependent read-model rows first, then emit each affected row.
+    await dependency.refresh(sourceId, conn);
+    const ids = await dependency.getIds(sourceId, conn);
+    for (const id of ids) {
+      const row = await getViewRowById(dependency.moduleKey, id, conn);
+      if (row) {
+        emitRealtime(
+          'module:data_updated',
+          { module: dependency.moduleKey, record: row },
+          emitMode
+        );
+      }
+    }
+  }
+}
+
 process.on('SIGINT', async () => {
   console.log('\n??  Shutting down...');
 
   try {
     if (cdcConsumer) await cdcConsumer.stop();
+    if (redisSub) await redisSub.quit();
+    if (redisPub) await redisPub.quit();
     if (pool) await pool.end();
     server.close();
     console.log('? Server closed gracefully');

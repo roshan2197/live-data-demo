@@ -31,6 +31,9 @@ class DebeziumCDCConsumer {
       moduleByTable: options.moduleByTable || {},
       ...options,
     };
+    // Optional realtime emitter to support Redis Pub/Sub fanout.
+    // If not provided, events go directly to WebSocket via this.io.emit.
+    this.realtime = options.realtime || null;
     this.subscriptions = new Map(); // Service subscriptions per client
   }
 
@@ -161,12 +164,13 @@ class DebeziumCDCConsumer {
       cdcEvent.after || {},
     );
 
-    console.log(after);
     if (Object.keys(after).length === 0) return; // No actual changes
 
-    // Emit to all clients (raw CDC)
-    this.io.emit("cdc:change", broadcastEvent);
-    this.io.emit(`cdc:${cdcEvent.table}`, broadcastEvent);
+    // CDC emits:
+    // - "cdc:*" = raw change streams for debugging or external consumers.
+    // - "module:*" = UI-friendly updates used by the Angular app.
+    this._emit("cdc:change", broadcastEvent);
+    this._emit(`cdc:${cdcEvent.table}`, broadcastEvent);
 
     const moduleKey = this.options.moduleByTable[cdcEvent.table];
     if (!moduleKey) return;
@@ -174,21 +178,32 @@ class DebeziumCDCConsumer {
     const liveRecord = { id: after.id ?? cdcEvent.recordId, ...after };
 
     if (cdcEvent.operation === "c" || cdcEvent.operation === "r") {
-      this.io.emit("module:data_inserted", {
+      this._emit("module:data_inserted", {
         module: moduleKey,
         record: liveRecord,
       });
     } else if (cdcEvent.operation === "u") {
-      this.io.emit("module:data_updated", {
+      this._emit("module:data_updated", {
         module: moduleKey,
         record: liveRecord,
       });
     } else if (cdcEvent.operation === "d") {
-      this.io.emit("module:data_updated", {
+      this._emit("module:data_updated", {
         module: moduleKey,
         record: liveRecord,
         deleted: true,
       });
+    }
+  }
+
+  // Emit helper so we can switch between direct WebSocket and Redis Pub/Sub.
+  _emit(eventName, payload) {
+    if (this.realtime?.emit) {
+      this.realtime.emit(eventName, payload);
+      return;
+    }
+    if (this.io) {
+      this.io.emit(eventName, payload);
     }
   }
 
