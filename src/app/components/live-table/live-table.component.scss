@@ -1,49 +1,49 @@
-/* Custom styles for table scrolling */
-table {
-  display: block;
-  overflow-y: auto;
-  overflow-x: hidden;
-  height: 100%;
-  max-height: calc(100vh - 290px);
+.live-table-root {
+  min-height: calc(100vh - 76px);
 }
 
-thead {
-  display: block;
+table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  table-layout: auto;
+}
+
+thead th {
   position: sticky;
   top: 0;
   z-index: 10;
 }
 
-tbody {
-  display: block;
-  overflow-y: auto;
-  overflow-x: hidden;
-  max-height: calc(100vh - 290px);
+th,
+td {
+  white-space: nowrap;
+  vertical-align: middle;
 }
 
-tr {
-  display: table;
-  width: 100%;
-  table-layout: fixed;
-
-  // Row blink - Cyan highlight with rounded effect
-  &.animate-rowBlink {
-    td {
-      border-radius: 4px;
-      animation: rowBlink 1.2s ease-in-out;
-    }
-  }
+tr.animate-rowBlink td {
+  border-radius: 4px;
+  animation: rowBlink 1.2s ease-in-out;
 }
 
-/* Cell blink effect - Warm amber glow */
 ::ng-deep .animate-cellBlink {
   border-radius: 4px;
   animation: cellBlink 1.2s ease-in-out;
 }
 
-/* Row blink effect - Teal glow */
 ::ng-deep .animate-rowBlink {
   box-shadow: none;
+}
+
+.cell-text {
+  display: inline;
+  white-space: nowrap;
+}
+
+.status-pill {
+  display: inline-block;
+  white-space: nowrap;
+  vertical-align: middle;
 }
 
 @keyframes cellBlink {
@@ -71,5 +71,11 @@ tr {
   60% {
     box-shadow: none;
     background: rgba(45, 212, 191, 0.04);
+  }
+}
+
+@media (max-width: 640px) {
+  table {
+    min-width: 840px;
   }
 }

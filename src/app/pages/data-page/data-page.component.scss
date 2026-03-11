@@ -15,3 +15,13 @@
   margin: 0;
   color: rgba(226, 232, 240, 0.7);
 }
+
+@media (max-width: 640px) {
+  .page-header {
+    margin-bottom: 14px;
+  }
+
+  .page-header h1 {
+    font-size: 1.35rem;
+  }
+}

@@ -150,4 +150,39 @@ select:focus {
   .layout {
     grid-template-columns: 1fr;
   }
+
+  .record-list {
+    max-height: 240px;
+  }
+}
+
+@media (max-width: 640px) {
+  .layout {
+    gap: 16px;
+  }
+
+  .list-panel,
+  .form-panel {
+    padding: 14px;
+    border-radius: 14px;
+  }
+
+  .form-grid {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .page-header h1 {
+    font-size: 1.4rem;
+  }
+
+  .form-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .primary-button,
+  .ghost-button {
+    width: 100%;
+  }
 }

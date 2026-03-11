@@ -1,4 +1,4 @@
-import { Component, OnDestroy, OnInit } from '@angular/core';
+ï»¿import { Component, OnDestroy, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormBuilder, ReactiveFormsModule, Validators, FormGroup } from '@angular/forms';
 import { Subject, takeUntil } from 'rxjs';
@@ -112,7 +112,10 @@ export class FormPageComponent implements OnInit, OnDestroy {
     const value = this.form.getRawValue();
     const payload: Record<string, any> = {};
     this.formFields.forEach((field) => {
-      payload[field.key] = value[field.key];
+      payload[field.key] =
+        field.type === 'date'
+          ? this.normalizeDateValue(value[field.key])
+          : value[field.key];
     });
 
     this.saving = true;
@@ -136,7 +139,10 @@ export class FormPageComponent implements OnInit, OnDestroy {
   private patchForm(record: ModuleRecord, fromLiveUpdate: boolean) {
     const patchValue: Record<string, any> = { id: record.id };
     this.formFields.forEach((field) => {
-      patchValue[field.key] = record[field.key];
+      patchValue[field.key] =
+        field.type === 'date'
+          ? this.normalizeDateValue(record[field.key])
+          : record[field.key];
     });
 
     this.form.patchValue(patchValue, { emitEvent: false });
@@ -147,11 +153,29 @@ export class FormPageComponent implements OnInit, OnDestroy {
   }
 
   getListTitle(record: ModuleRecord) {
-    return record[this.moduleConfig.listTitleKey] ?? '—';
+    return record[this.moduleConfig.listTitleKey] ?? 'â€”';
   }
 
   getListSubtitle(record: ModuleRecord) {
     const subtitle = record[this.moduleConfig.listSubtitleKey];
-    return subtitle ? `${subtitle} • ${record.status ?? ''}` : record.status ?? '';
+    return subtitle ? `${subtitle} â€¢ ${record.status ?? ''}` : record.status ?? '';
+  }
+
+  private normalizeDateValue(value: unknown): string {
+    if (!value) return '';
+
+    if (typeof value === 'string') {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+        return value;
+      }
+
+      if (/^\d{4}-\d{2}-\d{2}/.test(value)) {
+        return value.slice(0, 10);
+      }
+    }
+
+    const parsed = new Date(String(value));
+    if (Number.isNaN(parsed.getTime())) return '';
+    return parsed.toISOString().slice(0, 10);
   }
 }

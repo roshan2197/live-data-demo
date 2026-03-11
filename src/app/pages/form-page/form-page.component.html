@@ -43,8 +43,7 @@
             <input
               *ngSwitchCase="'date'"
               [formControlName]="field.key"
-              type="text"
-              placeholder="YYYY-MM-DD"
+              type="date"
             />
             <select *ngSwitchCase="'status'" [formControlName]="field.key">
               <option *ngFor="let status of statusOptions" [value]="status">
