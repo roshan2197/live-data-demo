@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
+    "test": "node test/run-tests.js",
     "start:debezium": "node server-debezium.js",
     "dev:debezium": "node --watch server-debezium.js",
     "start:debezium:no-redis": "node server-debezium-no-redis.js",

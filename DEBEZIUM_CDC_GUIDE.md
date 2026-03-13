@@ -11,11 +11,11 @@ OLD APPROACH:                          DEBEZIUM CDC APPROACH:
 └──────┬───────┘                               │
        │                                       │
        ↓ Manual broadcast                      ↓ Writes to MariaDB
-┌──────────────────────────────┐
+┌───────────────────────────────┐
 │ change_log table or           │       ┌──────────────┐
 │ direct broadcast              │       │ MariaDB      │
 │ (some changes missed)         │       │ (binlog)     │
-└──────┬───────────────────────┘       └──────┬───────┘
+└──────┬────────────────────────┘        └──────┬───────┘
        │                                       │
        ↓                                       ↓ Binary log
     WebSocket                           ┌──────────────────────────┐
